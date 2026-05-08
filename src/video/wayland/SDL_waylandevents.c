@@ -378,13 +378,13 @@ void Wayland_DisplayInitPointerGestureManager(SDL_VideoData *display)
 static void Wayland_SeatCreateCursorShape(SDL_WaylandSeat *seat)
 {
     if (seat->display->cursor_shape_manager) {
-        if (seat->pointer.wl_pointer && !seat->pointer.cursor_state.cursor_shape) {
+        if (Wayland_ShouldCreateCursorShape() && seat->pointer.wl_pointer && !seat->pointer.cursor_state.cursor_shape) {
             seat->pointer.cursor_state.cursor_shape = wp_cursor_shape_manager_v1_get_pointer(seat->display->cursor_shape_manager, seat->pointer.wl_pointer);
         }
 
         SDL_WaylandPenTool *tool;
         wl_list_for_each(tool, &seat->tablet.tool_list, link) {
-            if (!tool->cursor_state.cursor_shape) {
+            if (Wayland_ShouldCreateTabletCursorShape() && !tool->cursor_state.cursor_shape) {
                 tool->cursor_state.cursor_shape = wp_cursor_shape_manager_v1_get_tablet_tool_v2(seat->display->cursor_shape_manager, tool->wltool);
             }
         }
@@ -882,6 +882,7 @@ static void pointer_dispatch_leave(SDL_WaylandSeat *seat, bool update_pointer)
                 // Clear the capture flag and raise all buttons
                 window->sdlwindow->flags &= ~SDL_WINDOW_MOUSE_CAPTURE;
 
+                Wayland_SeatClearCursor(seat);
                 seat->pointer.focus = NULL;
                 seat->pointer.focus_surface = NULL;
                 for (Uint8 i = 1; seat->pointer.buttons_pressed; ++i) {
@@ -3393,6 +3394,7 @@ static void tablet_tool_handle_removed(void *data, struct zwp_tablet_tool_v2 *to
         SDL_RemovePenDevice(0, window, sdltool->instance_id);
     }
 
+    Wayland_TabletToolClearCursor(sdltool);
     Wayland_CursorStateRelease(&sdltool->cursor_state);
     zwp_tablet_tool_v2_destroy(sdltool->wltool);
     WAYLAND_wl_list_remove(&sdltool->link);
@@ -3566,6 +3568,7 @@ static void tablet_tool_handle_frame(void *data, struct zwp_tablet_tool_v2 *tool
 
     if (sdltool->frame.have_proximity && !sdltool->frame.in_proximity) {
         SDL_SendPenProximity(timestamp, instance_id, window, false, false);
+        Wayland_TabletToolClearCursor(sdltool);
         sdltool->focus = NULL;
         Wayland_TabletToolUpdateCursor(sdltool);
     }
@@ -3612,7 +3615,7 @@ static void tablet_seat_handle_tool_added(void *data, struct zwp_tablet_seat_v2 
         sdltool->info.max_tilt = -1.0f;
         sdltool->info.num_buttons = -1;
 
-        if (seat->display->cursor_shape_manager) {
+        if (seat->display->cursor_shape_manager && Wayland_ShouldCreateTabletCursorShape()) {
             sdltool->cursor_state.cursor_shape = wp_cursor_shape_manager_v1_get_tablet_tool_v2(seat->display->cursor_shape_manager, tool);
         }
 
@@ -3653,6 +3656,7 @@ static void Wayland_remove_all_pens_callback(SDL_PenID instance_id, void *handle
 {
     SDL_WaylandPenTool *sdltool = (SDL_WaylandPenTool *) handle;
 
+    Wayland_TabletToolClearCursor(sdltool);
     Wayland_CursorStateRelease(&sdltool->cursor_state);
     zwp_tablet_tool_v2_destroy(sdltool->wltool);
     SDL_free(sdltool);
@@ -3718,6 +3722,7 @@ void Wayland_DisplayRemoveWindowReferencesFromSeats(SDL_VideoData *display, SDL_
         }
 
         if (seat->pointer.focus == window) {
+            Wayland_SeatClearCursor(seat);
             seat->pointer.pending_frame.leave_surface = seat->pointer.focus->surface;
             pointer_dispatch_leave(seat, true);
             seat->pointer.pending_frame.leave_surface = NULL;
@@ -3734,6 +3739,7 @@ void Wayland_DisplayRemoveWindowReferencesFromSeats(SDL_VideoData *display, SDL_
         SDL_WaylandPenTool *tool;
         wl_list_for_each (tool, &seat->tablet.tool_list, link) {
             if (tool->focus == window) {
+                Wayland_TabletToolClearCursor(tool);
                 tool->focus = NULL;
                 Wayland_TabletToolUpdateCursor(tool);
                 if (tool->instance_id) {

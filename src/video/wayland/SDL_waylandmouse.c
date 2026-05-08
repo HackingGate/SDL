@@ -1269,6 +1269,26 @@ void Wayland_DisplayUpdatePointerFocusedScale(SDL_WindowData *updated_window)
     }
 }
 
+bool Wayland_ShouldCreateCursorShape(void)
+{
+    return !SDL_GetHintBoolean("SDL_VIDEO_WAYLAND_HIDE_CURSOR", false);
+}
+
+bool Wayland_ShouldCreateTabletCursorShape(void)
+{
+    return Wayland_ShouldCreateCursorShape() && !SDL_GetHintBoolean("SDL_VIDEO_WAYLAND_HIDE_TABLET_CURSOR", false);
+}
+
+static bool Wayland_ShouldShowCursor(const SDL_Mouse *mouse)
+{
+    return mouse->cursor_visible && Wayland_ShouldCreateCursorShape();
+}
+
+static bool Wayland_ShouldShowTabletCursor(const SDL_Mouse *mouse)
+{
+    return mouse->cursor_visible && Wayland_ShouldCreateTabletCursorShape();
+}
+
 static bool Wayland_ShowCursor(SDL_Cursor *cursor)
 {
     SDL_VideoDevice *vd = SDL_GetVideoDevice();
@@ -1276,6 +1296,10 @@ static bool Wayland_ShowCursor(SDL_Cursor *cursor)
     SDL_Mouse *mouse = SDL_GetMouse();
     SDL_WaylandSeat *seat;
     Wayland_PointerObject obj;
+
+    if (vd->is_quitting || !Wayland_ShouldShowCursor(mouse)) {
+        cursor = NULL;
+    }
 
     wl_list_for_each (seat, &d->seat_list, link) {
         if (seat->pointer.wl_pointer) {
@@ -1297,7 +1321,8 @@ static bool Wayland_ShowCursor(SDL_Cursor *cursor)
              * the pointer may not have focus, which would instead cause the default cursor to be set.
              */
             if (tool->focus && (!mouse->focus || mouse->focus->internal == tool->focus)) {
-                Wayland_CursorStateSetCursor(&tool->cursor_state, &obj, tool->focus, tool->proximity_serial, mouse->cur_cursor);
+                SDL_Cursor *tool_cursor = (cursor && Wayland_ShouldShowTabletCursor(mouse)) ? mouse->cur_cursor : NULL;
+                Wayland_CursorStateSetCursor(&tool->cursor_state, &obj, tool->focus, tool->proximity_serial, tool_cursor);
             } else if (!tool->focus) {
                 Wayland_CursorStateResetCursor(&tool->cursor_state);
             }
@@ -1520,7 +1545,7 @@ void Wayland_RecreateCursors(void)
     }
     if (mouse->cur_cursor) {
         Wayland_RecreateCursor(mouse->cur_cursor, vdata);
-        if (mouse->cursor_visible) {
+        if (Wayland_ShouldShowCursor(mouse)) {
             Wayland_ShowCursor(mouse->cur_cursor);
         }
     }
@@ -1617,16 +1642,31 @@ void Wayland_SeatResetCursor(SDL_WaylandSeat *seat)
     Wayland_CursorStateResetCursor(&seat->pointer.cursor_state);
 }
 
-void Wayland_SeatSetDefaultCursor(SDL_WaylandSeat *seat)
+void Wayland_SeatClearCursor(SDL_WaylandSeat *seat)
 {
-    SDL_Mouse *mouse = SDL_GetMouse();
-    SDL_WindowData *pointer_focus = seat->pointer.focus;
     const Wayland_PointerObject obj = {
         .wl_pointer = seat->pointer.wl_pointer,
         .is_pointer = true
     };
 
-    Wayland_CursorStateSetCursor(&seat->pointer.cursor_state, &obj, pointer_focus, seat->pointer.enter_serial, mouse->def_cursor);
+    if (seat->pointer.wl_pointer) {
+        Wayland_CursorStateSetCursor(&seat->pointer.cursor_state, &obj, seat->pointer.focus, seat->pointer.enter_serial, NULL);
+    } else {
+        Wayland_CursorStateResetCursor(&seat->pointer.cursor_state);
+    }
+}
+
+void Wayland_SeatSetDefaultCursor(SDL_WaylandSeat *seat)
+{
+    SDL_Mouse *mouse = SDL_GetMouse();
+    SDL_WindowData *pointer_focus = seat->pointer.focus;
+    SDL_Cursor *cursor = Wayland_ShouldShowCursor(mouse) ? mouse->def_cursor : NULL;
+    const Wayland_PointerObject obj = {
+        .wl_pointer = seat->pointer.wl_pointer,
+        .is_pointer = true
+    };
+
+    Wayland_CursorStateSetCursor(&seat->pointer.cursor_state, &obj, pointer_focus, seat->pointer.enter_serial, cursor);
 }
 
 void Wayland_SeatUpdatePointerCursor(SDL_WaylandSeat *seat)
@@ -1639,7 +1679,7 @@ void Wayland_SeatUpdatePointerCursor(SDL_WaylandSeat *seat)
     };
 
     if (pointer_focus) {
-        if (mouse->cursor_visible) {
+        if (Wayland_ShouldShowCursor(mouse)) {
             if (!seat->pointer.relative_pointer || !mouse->relative_mode_hide_cursor) {
                 const SDL_HitTestResult rc = pointer_focus->hit_test_result;
 
@@ -1670,7 +1710,7 @@ void Wayland_TabletToolUpdateCursor(SDL_WaylandPenTool *tool)
     };
 
     if (tool_focus) {
-        if (mouse->cursor_visible) {
+        if (Wayland_ShouldShowTabletCursor(mouse)) {
             // Relative mode is only relevant if the tool sends pointer events.
             const bool relative = mouse->pen_mouse_events && (tool_focus->sdlwindow->flags & SDL_WINDOW_MOUSE_RELATIVE_MODE);
 
@@ -1683,6 +1723,20 @@ void Wayland_TabletToolUpdateCursor(SDL_WaylandPenTool *tool)
         } else {
             Wayland_CursorStateSetCursor(&tool->cursor_state, &obj, tool_focus, tool->proximity_serial, NULL);
         }
+    } else {
+        Wayland_CursorStateResetCursor(&tool->cursor_state);
+    }
+}
+
+void Wayland_TabletToolClearCursor(SDL_WaylandPenTool *tool)
+{
+    const Wayland_PointerObject obj = {
+        .wl_tool = tool->wltool,
+        .is_pointer = false
+    };
+
+    if (tool->wltool) {
+        Wayland_CursorStateSetCursor(&tool->cursor_state, &obj, tool->focus, tool->proximity_serial, NULL);
     } else {
         Wayland_CursorStateResetCursor(&tool->cursor_state);
     }
